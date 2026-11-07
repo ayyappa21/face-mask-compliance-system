@@ -1,0 +1,8 @@
+# Tell Vercel to completely ignore Python backend and deep learning models
+# Vercel will only build and host the high-performance React frontend
+backend/
+docker-compose.yml
+render.yaml
+*.db
+*.onnx
+*.pt

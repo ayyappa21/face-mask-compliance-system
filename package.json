@@ -1,0 +1,10 @@
+{
+  "name": "face-mask-compliance-system",
+  "version": "1.0.0",
+  "private": true,
+  "description": "FaceGuard AI: Real-Time Face Mask Compliance Monitoring System",
+  "scripts": {
+    "build": "cd frontend && npm install && npm run build",
+    "dev": "cd frontend && npm run dev"
+  }
+}
