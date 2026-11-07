@@ -1,15 +1,16 @@
-const API_HOST = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-  ? `http://${window.location.hostname}:8001`
-  : '';
+
+const API_HOST = 'https://faceguard-backend-22en.onrender.com';
 
 const API_BASE = `${API_HOST}/api`;
 
 function getAuthHeaders() {
   const token = localStorage.getItem('fm_access_token');
   const headers = {};
+
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
+
   return headers;
 }
 
@@ -17,6 +18,7 @@ export const api = {
   // Health
   async getHealth() {
     const res = await fetch(`${API_HOST}/health`);
+    if (!res.ok) throw new Error('Backend health check failed');
     return res.json();
   },
 
@@ -27,10 +29,14 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password })
     });
+
     if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: 'Authentication failed' }));
+      const err = await res.json().catch(() => ({
+        detail: 'Authentication failed'
+      }));
       throw new Error(err.detail || 'Login failed');
     }
+
     return res.json();
   },
 
@@ -42,7 +48,7 @@ export const api = {
     return res.json();
   },
 
-  // Statistics & Analytics
+  // Statistics
   async getStatistics() {
     const res = await fetch(`${API_BASE}/statistics`, {
       headers: getAuthHeaders()
@@ -92,22 +98,33 @@ export const api = {
   async createCamera(cameraData) {
     const res = await fetch(`${API_BASE}/cameras`, {
       method: 'POST',
-      headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+      headers: {
+        ...getAuthHeaders(),
+        'Content-Type': 'application/json'
+      },
       body: JSON.stringify(cameraData)
     });
+
     if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: 'Failed to create camera' }));
+      const err = await res.json().catch(() => ({
+        detail: 'Failed to create camera'
+      }));
       throw new Error(err.detail || 'Failed to create camera');
     }
+
     return res.json();
   },
 
   async updateCamera(id, updateData) {
     const res = await fetch(`${API_BASE}/cameras/${id}`, {
       method: 'PUT',
-      headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+      headers: {
+        ...getAuthHeaders(),
+        'Content-Type': 'application/json'
+      },
       body: JSON.stringify(updateData)
     });
+
     if (!res.ok) throw new Error('Failed to update camera');
     return res.json();
   },
@@ -117,6 +134,7 @@ export const api = {
       method: 'DELETE',
       headers: getAuthHeaders()
     });
+
     if (!res.ok) throw new Error('Failed to delete camera');
     return res.json();
   },
@@ -125,12 +143,17 @@ export const api = {
   async detectFrame(formData) {
     const res = await fetch(`${API_BASE}/detect`, {
       method: 'POST',
+      headers: getAuthHeaders(),
       body: formData
     });
+
     if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: 'Detection failed' }));
+      const err = await res.json().catch(() => ({
+        detail: 'Detection failed'
+      }));
       throw new Error(err.detail || 'Detection failed');
     }
+
     return res.json();
   }
 };
