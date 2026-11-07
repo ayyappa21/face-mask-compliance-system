@@ -47,7 +47,8 @@ async def detect_frame(
     result = detector.detect_and_classify_frame(
         frame_bgr=img_bgr,
         camera_id=camera_id,
-        annotate=True
+        annotate=True,
+        is_single_face_upload=True
     )
 
     if save_to_db:

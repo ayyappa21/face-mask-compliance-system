@@ -58,13 +58,13 @@ export class DetectionWebSocket {
     }
   }
 
-  sendFrame(base64Image, saveToDb = false) {
+  sendFrame(base64Image, saveToDb = false, returnAnnotated = false) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({
         type: 'frame',
         image: base64Image,
         save: saveToDb,
-        return_annotated: true
+        return_annotated: returnAnnotated
       }));
     }
   }

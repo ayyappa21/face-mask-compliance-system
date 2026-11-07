@@ -87,6 +87,56 @@ class MaskClassifierService:
             self.model.eval()
             self.is_loaded = False
 
+    def predict_faces_batch(self, face_crops: List[np.ndarray]) -> List[Tuple[str, float, str]]:
+        """
+        Predict compliance category for a batch of cropped face BGR images simultaneously.
+        Leverages GPU/MPS tensor batching to classify multiple people in a single forward pass.
+        Returns: List of (label, confidence_score, hex_color)
+        """
+        if not face_crops:
+            return []
+
+        if not TORCH_AVAILABLE or self.model is None or len(face_crops) == 1:
+            return [self.predict_face(crop) for crop in face_crops]
+
+        import cv2
+        tensors = []
+        valid_indices = []
+
+        for idx, crop in enumerate(face_crops):
+            if crop is None or crop.shape[0] < 8 or crop.shape[1] < 8:
+                continue
+            try:
+                face_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+                pil_img = Image.fromarray(face_rgb)
+                tensors.append(self.transform(pil_img))
+                valid_indices.append(idx)
+            except Exception:
+                continue
+
+        if not tensors:
+            return [self.predict_face(crop) for crop in face_crops]
+
+        try:
+            batch_tensor = torch.stack(tensors).to(self.device)
+            with torch.no_grad():
+                logits = self.model(batch_tensor)
+                probs = torch.softmax(logits, dim=1).cpu().numpy()
+
+            results = [("Mask", 0.85, "#10B981")] * len(face_crops)
+            for i, orig_idx in enumerate(valid_indices):
+                p = probs[i]
+                pred_idx = int(np.argmax(p))
+                conf = float(p[pred_idx])
+                lbl = self.classes[pred_idx]
+                col = self.class_colors.get(lbl, "#10B981")
+                results[orig_idx] = (lbl, conf, col)
+
+            return results
+        except Exception as e:
+            logger.warning(f"Batch inference failed: {e}. Falling back to sequential inference.")
+            return [self.predict_face(crop) for crop in face_crops]
+
     def predict_face(self, face_bgr: np.ndarray) -> Tuple[str, float, str]:
         """
         Predict compliance category for a cropped face BGR image.

@@ -9,7 +9,7 @@ def run_camera_stream(
     source="0",
     camera_id="CAM-01",
     sync_api=False,
-    api_url="http://localhost:8000/api/detect"
+    api_url="http://localhost:8001/api/detect"
 ):
     """
     Real-Time OpenCV Desktop & CCTV Video Stream Processing Agent.

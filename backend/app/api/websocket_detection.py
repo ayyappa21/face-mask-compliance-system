@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import logging
@@ -40,7 +41,7 @@ async def websocket_detection_endpoint(websocket: WebSocket, camera_id: str = "w
             elif msg_type == "frame":
                 b64_img = data.get("image", "")
                 save_to_db = data.get("save", False)
-                return_annotated = data.get("return_annotated", True)
+                return_annotated = data.get("return_annotated", False)
 
                 if not b64_img:
                     continue
@@ -59,8 +60,9 @@ async def websocket_detection_endpoint(websocket: WebSocket, camera_id: str = "w
                 if frame_bgr is None:
                     continue
 
-                # Run inference
-                result = detector.detect_and_classify_frame(
+                # Run inference asynchronously in thread pool so event loop remains non-blocking
+                result = await asyncio.to_thread(
+                    detector.detect_and_classify_frame,
                     frame_bgr=frame_bgr,
                     camera_id=camera_id,
                     annotate=return_annotated
@@ -102,6 +104,7 @@ async def websocket_detection_endpoint(websocket: WebSocket, camera_id: str = "w
                     "incorrect_mask_count": result.incorrect_mask_count,
                     "compliance_percentage": result.compliance_percentage,
                     "detections": [d.model_dump() for d in result.detections],
+                    "frame_dims": {"width": frame_bgr.shape[1], "height": frame_bgr.shape[0]},
                     "annotated_image": result.annotated_image if return_annotated else None
                 }
                 await websocket.send_json(resp_payload)
