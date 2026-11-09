@@ -17,10 +17,13 @@ import {
   Server
 } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext';
-import { api } from '../services/api';
+import { api, getApiBaseUrl, setCustomApiUrl, getCustomApiUrl } from '../services/api';
 
 export function SettingsPage() {
   const { theme, toggleTheme } = useTheme();
+
+  // Backend API URL State
+  const [apiUrl, setApiUrl] = useState(() => getCustomApiUrl() || getApiBaseUrl());
 
   // Settings State
   const [confidenceThreshold, setConfidenceThreshold] = useState(() => {
@@ -49,6 +52,7 @@ export function SettingsPage() {
 
   // Sync to local storage
   const handleSave = () => {
+    setCustomApiUrl(apiUrl);
     localStorage.setItem('faceguard_conf_threshold', confidenceThreshold.toString());
     localStorage.setItem('faceguard_sound_alerts', soundAlerts.toString());
     localStorage.setItem('faceguard_strict_compliance', strictCompliance.toString());
@@ -58,9 +62,12 @@ export function SettingsPage() {
 
     setSavedToast(true);
     setTimeout(() => setSavedToast(false), 2400);
+    testBackendConnection();
   };
 
   const handleResetDefaults = () => {
+    setCustomApiUrl('');
+    setApiUrl(getApiBaseUrl());
     setConfidenceThreshold(65);
     setSoundAlerts(true);
     setStrictCompliance(false);
@@ -366,11 +373,39 @@ export function SettingsPage() {
           </button>
         </div>
 
+        {/* Custom Backend URL Configuration Card */}
+        <div className="p-4 rounded-xl bg-[var(--glass-bg-subtle)] border border-[var(--glass-border-subtle)] space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-[var(--text-primary)]">Backend Server API Gateway URL</span>
+            <span className="text-[10px] text-[var(--text-muted)] font-mono">
+              Active: {getApiBaseUrl() || '(Default origin)'}
+            </span>
+          </div>
+          <div className="flex items-center space-x-2">
+            <input
+              type="text"
+              value={apiUrl}
+              onChange={(e) => setApiUrl(e.target.value)}
+              placeholder="e.g. https://your-backend.onrender.com or http://localhost:8001"
+              className="flex-1 px-3 py-1.5 rounded-lg bg-[var(--bg-primary)] border border-[var(--glass-border-subtle)] text-xs text-[var(--text-primary)] font-mono outline-none focus:border-[var(--accent)]"
+            />
+            <button
+              onClick={() => {
+                setCustomApiUrl(apiUrl);
+                testBackendConnection();
+              }}
+              className="px-3 py-1.5 rounded-lg bg-[var(--accent)] text-white text-xs font-semibold hover:opacity-90 transition-all shrink-0"
+            >
+              Connect & Verify
+            </button>
+          </div>
+        </div>
+
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 text-xs">
           <div className="p-3 rounded-xl bg-[var(--glass-bg-subtle)] border border-[var(--glass-border-subtle)]">
             <span className="text-[11px] text-[var(--text-muted)] block">FastAPI Gateway</span>
-            <span className="font-mono font-semibold text-[var(--text-primary)] mt-1 block">
-              http://localhost:8001
+            <span className="font-mono font-semibold text-[var(--text-primary)] mt-1 block truncate">
+              {getApiBaseUrl() || 'http://localhost:8001'}
             </span>
             <div className="flex items-center space-x-1 mt-1 text-[10px] text-[var(--success)]">
               <span className="w-1.5 h-1.5 rounded-full bg-[var(--success)] live-pulse" />

@@ -17,9 +17,13 @@ import {
   Sparkles,
   Activity,
   Zap,
-  X
+  X,
+  SwitchCamera,
+  Server,
+  CheckCircle2,
+  Settings as SettingsIcon
 } from 'lucide-react';
-import { api } from '../services/api';
+import { api, getApiBaseUrl, setCustomApiUrl, getCustomApiUrl } from '../services/api';
 import { DetectionWebSocket } from '../services/websocket';
 
 export function LiveMonitoringPage() {
@@ -35,6 +39,19 @@ export function LiveMonitoringPage() {
   const [webcamActive, setWebcamActive] = useState(false);
   const [cameraError, setCameraError] = useState(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Multi-camera & device selection
+  const [facingMode, setFacingMode] = useState('user'); // 'user' or 'environment'
+  const [availableDevices, setAvailableDevices] = useState([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState('');
+
+  // Dual-mode connection state: 'ws' (WebSocket), 'http' (HTTP frame polling fallback), 'offline'
+  const [streamMode, setStreamMode] = useState('ws');
+  const [backendStatus, setBackendStatus] = useState('checking'); // 'connected' | 'fallback_http' | 'offline' | 'checking'
+  const [showConfigModal, setShowConfigModal] = useState(false);
+  const [customUrlInput, setCustomUrlInput] = useState(() => getCustomApiUrl() || getApiBaseUrl());
+  const [testResult, setTestResult] = useState(null);
+  const [testingUrl, setTestingUrl] = useState(false);
 
   // Live detection telemetry
   const [liveMetrics, setLiveMetrics] = useState({
@@ -55,12 +72,69 @@ export function LiveMonitoringPage() {
   const serverDimsRef = useRef({ width: 480, height: 360 });
   const frameCounterRef = useRef({ count: 0, lastTime: performance.now() });
   const currentDetectionsRef = useRef([]);
+  const activeStreamRef = useRef(null);
+  const consecutiveErrorsRef = useRef(0);
 
-  // Draw hardware-accelerated bounding boxes on the overlay canvas
+  // Enumerate video devices on mount
+  useEffect(() => {
+    async function getDevices() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevs = devices.filter((d) => d.kind === 'videoinput');
+        setAvailableDevices(videoDevs);
+        if (videoDevs.length > 0 && !selectedDeviceId) {
+          setSelectedDeviceId(videoDevs[0].deviceId);
+        }
+      } catch (err) {
+        console.warn('Could not enumerate video devices:', err);
+      }
+    }
+    getDevices();
+  }, [selectedDeviceId]);
+
+  // Load cameras from backend
+  useEffect(() => {
+    async function loadCameras() {
+      try {
+        const camList = await api.getCameras();
+        setCameras(camList);
+        if (camList.length > 0) {
+          setSelectedCamera(camList[0].id);
+        }
+        setBackendStatus('connected');
+      } catch (err) {
+        console.warn('Error fetching cameras from backend:', err);
+        // Default camera if backend unreachable
+        setCameras([
+          { id: 'CAM-01', camera_name: 'Main Entrance - Terminal 1' },
+          { id: 'CAM-02', camera_name: 'Lobby Corridor North' }
+        ]);
+        setBackendStatus('offline');
+      }
+    }
+    loadCameras();
+  }, []);
+
+  // Check backend health periodically
+  const checkBackendHealth = useCallback(async () => {
+    try {
+      await api.getHealth(3000);
+      setBackendStatus((prev) => (prev === 'fallback_http' ? 'fallback_http' : 'connected'));
+    } catch {
+      setBackendStatus('offline');
+    }
+  }, []);
+
+  useEffect(() => {
+    checkBackendHealth();
+  }, [checkBackendHealth]);
+
+  // Pixel-perfect bounding box rendering with letterbox/pillarbox offset compensation
   const drawBoundingBoxes = useCallback((detections, serverDims) => {
     const canvas = overlayCanvasRef.current;
     const video = videoRef.current;
-    if (!canvas) return;
+    if (!canvas || !video) return;
 
     const ctx = canvas.getContext('2d');
     const width = canvas.clientWidth;
@@ -77,12 +151,34 @@ export function LiveMonitoringPage() {
 
     const sWidth = serverDims?.width || 480;
     const sHeight = serverDims?.height || 360;
-    const scaleX = width / sWidth;
-    const scaleY = height / sHeight;
 
-    detections.forEach((det, index) => {
-      const bx = det.box.x * scaleX;
-      const by = det.box.y * scaleY;
+    // Calculate actual rendered video dimensions inside the container (object-contain)
+    const vw = video.videoWidth || sWidth;
+    const vh = video.videoHeight || sHeight;
+    const videoAspect = vw / vh;
+    const containerAspect = width / height;
+
+    let renderW, renderH, offsetX, offsetY;
+    if (containerAspect > videoAspect) {
+      // Letterboxed on sides (pillarbox)
+      renderH = height;
+      renderW = height * videoAspect;
+      offsetX = (width - renderW) / 2;
+      offsetY = 0;
+    } else {
+      // Letterboxed on top/bottom
+      renderW = width;
+      renderH = width / videoAspect;
+      offsetX = 0;
+      offsetY = (height - renderH) / 2;
+    }
+
+    const scaleX = renderW / sWidth;
+    const scaleY = renderH / sHeight;
+
+    detections.forEach((det) => {
+      const bx = offsetX + det.box.x * scaleX;
+      const by = offsetY + det.box.y * scaleY;
       const bw = det.box.width * scaleX;
       const bh = det.box.height * scaleY;
 
@@ -91,16 +187,16 @@ export function LiveMonitoringPage() {
       // Glowing bounding box
       ctx.save();
       ctx.shadowColor = color;
-      ctx.shadowBlur = 12;
+      ctx.shadowBlur = 10;
       ctx.lineWidth = 2.5;
       ctx.strokeStyle = color;
 
-      // Draw box with rounded aesthetic
+      // Rounded rectangle
       ctx.strokeRect(bx, by, bw, bh);
 
-      // Draw high-tech corner tick accents
-      const corner = Math.min(bw * 0.22, bh * 0.22, 18);
-      ctx.lineWidth = 4;
+      // High-tech corner tick accents
+      const corner = Math.min(bw * 0.22, bh * 0.22, 16);
+      ctx.lineWidth = 3.5;
       // Top-Left
       ctx.beginPath();
       ctx.moveTo(bx, by + corner);
@@ -128,87 +224,170 @@ export function LiveMonitoringPage() {
 
       ctx.restore();
 
-      // Top label badge
-      const labelText = `${det.label} ${Math.round(det.confidence * 100)}%`;
-      ctx.font = 'bold 12px "Inter", system-ui, sans-serif';
+      // Top classification & confidence badge
+      const confPercent = Math.round(det.confidence * 100);
+      const labelText = `${det.label} ${confPercent}%`;
+      ctx.font = 'bold 11px "Inter", system-ui, -apple-system, sans-serif';
       const textWidth = ctx.measureText(labelText).width;
-      const badgeH = 22;
-      const badgeW = textWidth + 16;
+      const badgeH = 20;
+      const badgeW = textWidth + 14;
       const badgeY = Math.max(0, by - badgeH);
 
       // Translucent badge background
       ctx.fillStyle = color;
       ctx.beginPath();
-      ctx.roundRect(bx, badgeY, badgeW, badgeH, [6, 6, 0, 0]);
+      ctx.roundRect(bx, badgeY, badgeW, badgeH, [4, 4, 0, 0]);
       ctx.fill();
 
       // White text
       ctx.fillStyle = '#FFFFFF';
-      ctx.fillText(labelText, bx + 8, badgeY + 15);
+      ctx.fillText(labelText, bx + 7, badgeY + 14);
     });
   }, []);
 
-  useEffect(() => {
-    async function loadCameras() {
-      try {
-        const camList = await api.getCameras();
-        setCameras(camList);
-        if (camList.length > 0) {
-          setSelectedCamera(camList[0].id);
-        }
-      } catch (err) {
-        console.error('Error fetching cameras', err);
+  // Update telemetry and frame rate statistics
+  const updateTelemetry = useCallback((data) => {
+    isProcessingRef.current = false;
+    consecutiveErrorsRef.current = 0;
+
+    const dets = data.detections || [];
+    currentDetectionsRef.current = dets;
+
+    if (data.frame_dims) {
+      serverDimsRef.current = data.frame_dims;
+    }
+
+    setLiveMetrics({
+      total_faces: data.total_faces || dets.length,
+      mask_count: data.mask_count || 0,
+      no_mask_count: data.no_mask_count || 0,
+      incorrect_mask_count: data.incorrect_mask_count || 0,
+      compliance_percentage: data.compliance_percentage !== undefined ? data.compliance_percentage : 100.0,
+      detections: dets
+    });
+
+    drawBoundingBoxes(dets, serverDimsRef.current);
+
+    frameCounterRef.current.count += 1;
+    const now = performance.now();
+    if (now - frameCounterRef.current.lastTime >= 1000) {
+      setFps(Math.round((frameCounterRef.current.count * 1000) / (now - frameCounterRef.current.lastTime)));
+      frameCounterRef.current.count = 0;
+      frameCounterRef.current.lastTime = now;
+    }
+  }, [drawBoundingBoxes]);
+
+  // Frame streaming dispatcher (WebSocket or HTTP Fallback)
+  const sendFrameOverHttp = useCallback(async (base64Image, saveToDb = false) => {
+    if (isProcessingRef.current) return;
+    isProcessingRef.current = true;
+
+    try {
+      const res = await api.detectFrameJson({
+        image: base64Image,
+        camera_id: selectedCamera,
+        save_to_db: saveToDb,
+        return_annotated: false
+      });
+      updateTelemetry(res);
+      setBackendStatus('fallback_http');
+    } catch (err) {
+      isProcessingRef.current = false;
+      consecutiveErrorsRef.current += 1;
+      if (consecutiveErrorsRef.current >= 4) {
+        setBackendStatus('offline');
       }
     }
-    loadCameras();
-  }, []);
+  }, [selectedCamera, updateTelemetry]);
 
-  // WebSocket Connection Management
+  // Start continuous frame extraction loop
+  const startFrameStreaming = useCallback((activeMode) => {
+    if (streamIntervalRef.current) clearInterval(streamIntervalRef.current);
+
+    let frameIndex = 0;
+    const targetW = 480;
+    const targetH = 360;
+    serverDimsRef.current = { width: targetW, height: targetH };
+
+    // WebSocket runs at ~15-20 FPS (66ms); HTTP streaming runs at ~10-12 FPS (90ms)
+    const intervalMs = activeMode === 'ws' ? 66 : 90;
+
+    streamIntervalRef.current = setInterval(() => {
+      if (!videoRef.current || !captureCanvasRef.current) return;
+      const video = videoRef.current;
+      if (video.videoWidth === 0 || video.videoHeight === 0 || video.paused || video.ended) return;
+
+      if (isProcessingRef.current) return;
+
+      const canvas = captureCanvasRef.current;
+      if (canvas.width !== targetW || canvas.height !== targetH) {
+        canvas.width = targetW;
+        canvas.height = targetH;
+      }
+
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(video, 0, 0, targetW, targetH);
+
+      const b64 = canvas.toDataURL('image/jpeg', 0.52);
+      frameIndex++;
+      const saveToDb = frameIndex % 15 === 0;
+
+      if (activeMode === 'ws' && wsClientRef.current && wsClientRef.current.isConnected) {
+        isProcessingRef.current = true;
+        wsClientRef.current.sendFrame(b64, saveToDb, false);
+
+        // Safety timeout to reset lock
+        setTimeout(() => {
+          isProcessingRef.current = false;
+        }, 300);
+      } else {
+        // HTTP Frame Streaming Fallback
+        sendFrameOverHttp(b64, saveToDb);
+      }
+    }, intervalMs);
+  }, [sendFrameOverHttp]);
+
+  // WebSocket Connection Management with Auto-Fallback to HTTP
   useEffect(() => {
     if (!isStreaming) return;
+
+    let wsConnected = false;
+    const fallbackTimer = setTimeout(() => {
+      if (!wsConnected && isStreaming) {
+        console.log('[LiveMonitoring] WebSocket connection timeout; auto-switching to HTTP streaming fallback.');
+        setStreamMode('http');
+        setBackendStatus('fallback_http');
+        startFrameStreaming('http');
+      }
+    }, 2200);
 
     const ws = new DetectionWebSocket(
       selectedCamera,
       (data) => {
         if (data.type === 'detection_result') {
-          isProcessingRef.current = false;
-
-          const dets = data.detections || [];
-          currentDetectionsRef.current = dets;
-
-          if (data.frame_dims) {
-            serverDimsRef.current = data.frame_dims;
-          }
-
-          setLiveMetrics({
-            total_faces: data.total_faces,
-            mask_count: data.mask_count,
-            no_mask_count: data.no_mask_count,
-            incorrect_mask_count: data.incorrect_mask_count,
-            compliance_percentage: data.compliance_percentage,
-            detections: dets
-          });
-
-          // Draw real-time bounding boxes directly on top of the live video
-          drawBoundingBoxes(dets, serverDimsRef.current);
-
-          frameCounterRef.current.count += 1;
-          const now = performance.now();
-          if (now - frameCounterRef.current.lastTime >= 1000) {
-            setFps(Math.round((frameCounterRef.current.count * 1000) / (now - frameCounterRef.current.lastTime)));
-            frameCounterRef.current.count = 0;
-            frameCounterRef.current.lastTime = now;
-          }
+          updateTelemetry(data);
         }
       },
       (err) => {
-        console.error('WS Error:', err);
-        isProcessingRef.current = false;
+        console.warn('[LiveMonitoring] WebSocket error, switching to HTTP streaming fallback:', err);
+        setStreamMode('http');
+        setBackendStatus('fallback_http');
+        startFrameStreaming('http');
       },
-      () => console.log('WebSocket stream active'),
       () => {
-        console.log('WebSocket stream closed');
-        isProcessingRef.current = false;
+        wsConnected = true;
+        clearTimeout(fallbackTimer);
+        setStreamMode('ws');
+        setBackendStatus('connected');
+        console.log('[LiveMonitoring] WebSocket stream established.');
+        startFrameStreaming('ws');
+      },
+      () => {
+        if (isStreaming && streamMode === 'ws') {
+          console.log('[LiveMonitoring] WebSocket disconnected; initiating HTTP streaming fallback.');
+          setStreamMode('http');
+          startFrameStreaming('http');
+        }
       }
     );
 
@@ -216,32 +395,73 @@ export function LiveMonitoringPage() {
     wsClientRef.current = ws;
 
     return () => {
-      ws.disconnect();
-      wsClientRef.current = null;
+      clearTimeout(fallbackTimer);
+      if (wsClientRef.current) {
+        wsClientRef.current.disconnect();
+        wsClientRef.current = null;
+      }
     };
-  }, [isStreaming, selectedCamera, drawBoundingBoxes]);
+  }, [isStreaming, selectedCamera, startFrameStreaming, streamMode, updateTelemetry]);
 
+  // Start webcam with robust error handling and multi-device support
   const startWebcam = async () => {
     setCameraError(null);
     setAnnotatedPreview(null);
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setCameraError(
+        'Camera API is not supported in this browser environment. Ensure you are accessing over HTTPS or localhost.'
+      );
+      return;
+    }
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-          frameRate: { ideal: 30, min: 15 }
-        }
-      });
+      // 1. Primary video constraints with selected device or facing mode
+      const videoConstraints = selectedDeviceId
+        ? { deviceId: { exact: selectedDeviceId }, width: { ideal: 640 }, height: { ideal: 480 } }
+        : { facingMode: { ideal: facingMode }, width: { ideal: 640 }, height: { ideal: 480 } };
+
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: videoConstraints,
+          audio: false
+        });
+      } catch (constraintErr) {
+        // Fallback to simple unconstrained video if specific constraints failed
+        console.warn('Initial camera constraints failed, attempting basic video:', constraintErr);
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      }
+
+      activeStreamRef.current = stream;
+
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
+        videoRef.current.setAttribute('playsinline', 'true');
+        videoRef.current.setAttribute('muted', 'true');
+        videoRef.current.playsInline = true;
+        videoRef.current.muted = true;
+        videoRef.current.autoplay = true;
+
         await videoRef.current.play();
       }
+
       setWebcamActive(true);
       setIsStreaming(true);
-      startFrameStreaming();
+      consecutiveErrorsRef.current = 0;
     } catch (err) {
-      console.error('Webcam access error', err);
-      setCameraError('Unable to access video device. Please verify camera permissions or upload a test photo.');
+      console.error('Webcam access error:', err);
+      let errorMsg = 'Could not access camera.';
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        errorMsg = 'Camera permission denied. Please click the lock or camera icon in your browser address bar to grant access.';
+      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+        errorMsg = 'No camera device found on this system. You can test detection by uploading a test photo below.';
+      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+        errorMsg = 'Camera is in use by another tab or application. Please close other camera apps and retry.';
+      } else {
+        errorMsg = `Camera error: ${err.message || 'Unable to start camera feed'}`;
+      }
+      setCameraError(errorMsg);
       setWebcamActive(false);
       setIsStreaming(false);
     }
@@ -252,9 +472,11 @@ export function LiveMonitoringPage() {
       clearInterval(streamIntervalRef.current);
       streamIntervalRef.current = null;
     }
-    if (videoRef.current && videoRef.current.srcObject) {
-      const tracks = videoRef.current.srcObject.getTracks();
-      tracks.forEach((track) => track.stop());
+    if (activeStreamRef.current) {
+      activeStreamRef.current.getTracks().forEach((track) => track.stop());
+      activeStreamRef.current = null;
+    }
+    if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
     if (wsClientRef.current) {
@@ -270,48 +492,16 @@ export function LiveMonitoringPage() {
     isProcessingRef.current = false;
   };
 
-  // High-performance adaptive frame transmission with in-flight lock
-  const startFrameStreaming = () => {
-    if (streamIntervalRef.current) clearInterval(streamIntervalRef.current);
-
-    let frameIndex = 0;
-    const targetW = 480;
-    const targetH = 360;
-    serverDimsRef.current = { width: targetW, height: targetH };
-
-    streamIntervalRef.current = setInterval(() => {
-      if (!videoRef.current || !captureCanvasRef.current || !wsClientRef.current) return;
-      const video = videoRef.current;
-      if (video.videoWidth === 0 || video.videoHeight === 0 || video.paused || video.ended) return;
-
-      // In-flight guard: Skip capture if previous inference is still in-flight
-      // Prevents WebSocket congestion and eliminates latency buildup
-      if (isProcessingRef.current) {
-        return;
-      }
-
-      const canvas = captureCanvasRef.current;
-      if (canvas.width !== targetW || canvas.height !== targetH) {
-        canvas.width = targetW;
-        canvas.height = targetH;
-      }
-
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      ctx.drawImage(video, 0, 0, targetW, targetH);
-
-      // Low-overhead compressed JPEG capture
-      const b64 = canvas.toDataURL('image/jpeg', 0.55);
-      frameIndex++;
-      const saveToDb = frameIndex % 15 === 0;
-
-      isProcessingRef.current = true;
-      wsClientRef.current.sendFrame(b64, saveToDb, false);
-
-      // Safety timeout: reset processing lock if response takes > 250ms
+  // Flip facing mode (user / environment)
+  const toggleFacingMode = async () => {
+    const nextMode = facingMode === 'user' ? 'environment' : 'user';
+    setFacingMode(nextMode);
+    if (isStreaming) {
+      stopMonitoring();
       setTimeout(() => {
-        isProcessingRef.current = false;
-      }, 250);
-    }, 66); // ~15-20 FPS inference ingestion rate for buttery-smooth responsiveness
+        startWebcam();
+      }, 300);
+    }
   };
 
   const toggleFullscreen = () => {
@@ -349,9 +539,30 @@ export function LiveMonitoringPage() {
         setAnnotatedPreview(res.annotated_image);
       }
     } catch (err) {
-      setCameraError(err.message || 'Image detection failed.');
+      setCameraError(err.message || 'Image detection failed. Verify backend connectivity in settings.');
     } finally {
       setProcessing(false);
+    }
+  };
+
+  // Save custom backend API URL
+  const handleSaveCustomUrl = async () => {
+    setTestingUrl(true);
+    setTestResult(null);
+    try {
+      setCustomApiUrl(customUrlInput);
+      const res = await api.getHealth(4000);
+      setTestResult({ ok: true, message: `Connected to ${res.app_name || 'FaceGuard AI'} (Status: ${res.status})` });
+      setBackendStatus('connected');
+      setTimeout(() => {
+        setShowConfigModal(false);
+        setTestResult(null);
+      }, 1500);
+    } catch (err) {
+      setTestResult({ ok: false, message: `Connection failed: ${err.message}` });
+      setBackendStatus('offline');
+    } finally {
+      setTestingUrl(false);
     }
   };
 
@@ -370,9 +581,30 @@ export function LiveMonitoringPage() {
                 <span>REAL-TIME • {fps} FPS</span>
               </span>
             )}
+            {/* Backend Connection Pill */}
+            <span
+              onClick={() => setShowConfigModal(true)}
+              className={`flex items-center space-x-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold cursor-pointer border transition-all ${
+                backendStatus === 'connected'
+                  ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30 hover:bg-emerald-500/20'
+                  : backendStatus === 'fallback_http'
+                  ? 'bg-amber-500/10 text-amber-500 border-amber-500/30 hover:bg-amber-500/20'
+                  : 'bg-rose-500/10 text-rose-500 border-rose-500/30 hover:bg-rose-500/20'
+              }`}
+              title="Click to configure backend API URL"
+            >
+              <Server className="w-3 h-3" />
+              <span>
+                {backendStatus === 'connected'
+                  ? 'WS Connected'
+                  : backendStatus === 'fallback_http'
+                  ? 'HTTP Fallback'
+                  : 'Backend Offline'}
+              </span>
+            </span>
           </div>
           <p className="text-xs text-[var(--text-secondary)] mt-0.5">
-            Ultra-fast multi-person CNN compliance detection, spatial bounding boxes, and compliance telemetry.
+            Real-time multi-person CNN compliance detection with adaptive dual-channel inference.
           </p>
         </div>
 
@@ -394,13 +626,22 @@ export function LiveMonitoringPage() {
             </select>
           </div>
 
+          {/* Front / Rear Camera Toggle (for mobile and webcams) */}
+          <button
+            onClick={toggleFacingMode}
+            className="p-2 rounded-xl glass-pill text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-all shadow-sm"
+            title={`Switch to ${facingMode === 'user' ? 'Rear' : 'Front'} Camera`}
+          >
+            <SwitchCamera className="w-4 h-4" />
+          </button>
+
           {!isStreaming ? (
             <button
               onClick={startWebcam}
               className="flex items-center space-x-2 px-4 py-2 rounded-xl bg-[var(--success)] hover:opacity-90 text-white text-xs font-bold shadow-lg shadow-emerald-500/25 transition-all"
             >
               <Play className="w-3.5 h-3.5 fill-current" />
-              <span>Start Webcam Feed</span>
+              <span>Start Live Camera</span>
             </button>
           ) : (
             <button
@@ -429,6 +670,14 @@ export function LiveMonitoringPage() {
           />
 
           <button
+            onClick={() => setShowConfigModal(true)}
+            className="p-2 rounded-xl glass-pill text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-all shadow-sm"
+            title="Configure Backend API Server URL"
+          >
+            <SettingsIcon className="w-4 h-4" />
+          </button>
+
+          <button
             onClick={toggleFullscreen}
             className="p-2 rounded-xl glass-pill text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-all shadow-sm"
             title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
@@ -437,6 +686,24 @@ export function LiveMonitoringPage() {
           </button>
         </div>
       </div>
+
+      {/* Backend Offline Guidance Banner */}
+      {backendStatus === 'offline' && (
+        <div className="p-3.5 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-amber-500 text-xs flex items-center justify-between">
+          <div className="flex items-center space-x-2">
+            <AlertCircle className="w-4 h-4 shrink-0 text-amber-500" />
+            <span>
+              Backend API server is not reachable from this domain. Configure your deployed backend URL (Render, Railway, or local tunnel) to enable neural inference.
+            </span>
+          </div>
+          <button
+            onClick={() => setShowConfigModal(true)}
+            className="font-bold underline ml-3 shrink-0 hover:text-amber-300"
+          >
+            Configure Backend URL
+          </button>
+        </div>
+      )}
 
       {cameraError && (
         <div className="p-3.5 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-rose-500 dark:text-rose-300 text-xs flex items-center justify-between">
@@ -464,7 +731,9 @@ export function LiveMonitoringPage() {
               <span className="text-white/30">|</span>
               <span className="text-white/80 font-mono text-[11px]">Res: 640x480</span>
               <span className="text-white/30">|</span>
-              <span className="text-white/80 text-[11px]">CNN: MobileNetV2</span>
+              <span className="text-white/80 text-[11px]">
+                Mode: {streamMode === 'ws' ? 'WebSocket (Real-Time)' : 'HTTP Stream Fallback'}
+              </span>
             </div>
 
             <div className="flex items-center space-x-2.5">
@@ -483,11 +752,12 @@ export function LiveMonitoringPage() {
 
           {/* Video Preview Surface */}
           <div className="relative flex-1 rounded-2xl overflow-hidden bg-black/90 flex items-center justify-center border border-white/10 min-h-[380px]">
-            {/* Native 60 FPS HTML5 Video Element - ALWAYS VISIBLE when webcam is active */}
+            {/* Native HTML5 Video Element - ALWAYS VISIBLE when webcam is active */}
             <video
               ref={videoRef}
               playsInline
               muted
+              autoPlay
               className={`w-full h-full object-contain ${annotatedPreview ? 'hidden' : 'block'}`}
             />
 
@@ -521,10 +791,18 @@ export function LiveMonitoringPage() {
                 <div className="w-16 h-16 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center mx-auto shadow-inner">
                   <VideoOff className="w-8 h-8 text-slate-400" />
                 </div>
-                <div className="text-sm font-bold text-white">No Active Camera Feed</div>
+                <div className="text-sm font-bold text-white">Live Camera Offline</div>
                 <p className="text-xs max-w-sm mx-auto text-slate-400 leading-relaxed">
-                  Click <strong className="text-[var(--accent)]">"Start Webcam Feed"</strong> to stream live camera frames, or click <strong className="text-white">"Test Photo"</strong> to evaluate sample images.
+                  Click <strong className="text-[var(--accent)]">"Start Live Camera"</strong> to activate browser webcam, or click <strong className="text-white">"Test Photo"</strong> to evaluate sample images.
                 </p>
+                <div className="pt-2">
+                  <button
+                    onClick={startWebcam}
+                    className="px-4 py-2 rounded-xl bg-[var(--accent)] hover:opacity-90 text-white text-xs font-bold transition-all shadow-lg"
+                  >
+                    Activate Camera Feed
+                  </button>
+                </div>
               </div>
             ) : null}
           </div>
@@ -547,7 +825,7 @@ export function LiveMonitoringPage() {
             </div>
 
             <div className="text-[11px] text-cyan-400 font-mono font-medium">
-              Inference: ~17ms • YuNet CNN + MobileNetV2 Batch
+              Model: MobileNetV2 CNN • YuNet Multi-Face
             </div>
           </div>
         </div>
@@ -605,7 +883,7 @@ export function LiveMonitoringPage() {
           {/* Detected Subjects Card */}
           <div className="glass-card p-4 space-y-2.5">
             <span className="text-[10px] font-bold text-[var(--text-secondary)] uppercase tracking-wider">
-              Detected Subjects ({liveMetrics.detections.length})
+              Detected People ({liveMetrics.detections.length})
             </span>
 
             {liveMetrics.detections.length === 0 ? (
@@ -648,6 +926,82 @@ export function LiveMonitoringPage() {
           </div>
         </div>
       </div>
+
+      {/* Backend API Configuration Modal */}
+      {showConfigModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="glass-panel p-6 rounded-3xl max-w-lg w-full space-y-4 border border-white/20 shadow-2xl bg-[var(--bg-primary)]">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2 text-[var(--text-primary)] font-bold text-sm">
+                <Server className="w-4 h-4 text-[var(--accent)]" />
+                <span>Backend API Connection Settings</span>
+              </div>
+              <button
+                onClick={() => setShowConfigModal(false)}
+                className="p-1 rounded-full text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
+              When deployed on Vercel, the backend inference server can run on Render, Railway, or a Cloudflare tunnel. Enter the backend API URL below:
+            </p>
+
+            <div className="space-y-1.5">
+              <label className="text-[11px] font-semibold text-[var(--text-secondary)]">
+                Backend Server URL
+              </label>
+              <input
+                type="text"
+                value={customUrlInput}
+                onChange={(e) => setCustomUrlInput(e.target.value)}
+                placeholder="https://your-backend.onrender.com or http://localhost:8001"
+                className="w-full px-3.5 py-2 rounded-xl bg-[var(--glass-bg-subtle)] border border-[var(--glass-border-subtle)] text-xs text-[var(--text-primary)] font-mono outline-none focus:border-[var(--accent)]"
+              />
+              <span className="text-[10px] text-[var(--text-muted)] block">
+                Leave blank or set to http://localhost:8001 for local development.
+              </span>
+            </div>
+
+            {testResult && (
+              <div
+                className={`p-3 rounded-xl border text-xs flex items-center space-x-2 ${
+                  testResult.ok
+                    ? 'bg-emerald-500/10 border-emerald-500/30 text-[var(--success)]'
+                    : 'bg-rose-500/10 border-rose-500/30 text-[var(--danger)]'
+                }`}
+              >
+                {testResult.ok ? (
+                  <CheckCircle2 className="w-4 h-4 shrink-0 text-[var(--success)]" />
+                ) : (
+                  <AlertCircle className="w-4 h-4 shrink-0 text-[var(--danger)]" />
+                )}
+                <span>{testResult.message}</span>
+              </div>
+            )}
+
+            <div className="flex items-center justify-end space-x-2 pt-2">
+              <button
+                onClick={() => {
+                  setCustomUrlInput('http://localhost:8001');
+                }}
+                className="px-3 py-1.5 rounded-xl glass-pill text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+              >
+                Use Localhost
+              </button>
+              <button
+                onClick={handleSaveCustomUrl}
+                disabled={testingUrl}
+                className="flex items-center space-x-1.5 px-4 py-2 rounded-xl bg-[var(--accent)] text-white text-xs font-bold hover:opacity-95 shadow-md shadow-[var(--accent)]/30"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${testingUrl ? 'animate-spin' : ''}`} />
+                <span>{testingUrl ? 'Testing...' : 'Test & Connect'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

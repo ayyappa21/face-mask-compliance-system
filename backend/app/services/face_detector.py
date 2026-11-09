@@ -15,7 +15,7 @@ except ImportError:
     logger.warning("OpenCV not yet installed. Operating with image array stubs.")
 
 from app.services.cnn_classifier import MaskClassifierService
-from app.schemas.detection_schemas import BoundingBox, FaceDetectionResult, FrameDetectionResponse
+from app.schemas.detection_schemas import BoundingBox, FaceDetectionResult, FrameDetectionResponse, FrameDimensions
 
 class FaceDetectorService:
     _instance = None
@@ -48,7 +48,7 @@ class FaceDetectorService:
                     str(yunet_path),
                     "",
                     (320, 240),
-                    score_threshold=0.42,
+                    score_threshold=0.38,
                     nms_threshold=0.32,
                     top_k=100
                 )
@@ -246,6 +246,7 @@ class FaceDetectorService:
             incorrect_mask_count=incorrect_mask_count,
             compliance_percentage=round(compliance_pct, 2),
             detections=detections,
+            frame_dims=FrameDimensions(width=int(orig_w), height=int(orig_h)),
             annotated_image=annotated_b64
         )
 

@@ -1,4 +1,5 @@
 import io
+import base64
 import cv2
 import numpy as np
 import pytest
@@ -121,6 +122,30 @@ def test_detect_image_upload():
 def test_detect_invalid_upload():
     response = client.post("/api/detect", data={"camera_id": "CAM-01"})
     assert response.status_code == 400
+
+def test_detect_frame_json_endpoint():
+    # Test high-speed JSON frame endpoint (HTTP streaming fallback)
+    img = np.zeros((160, 160, 3), dtype=np.uint8)
+    img[:, :] = (130, 140, 150)
+    _, buffer = cv2.imencode(".jpg", img)
+    b64_str = f"data:image/jpeg;base64,{base64.b64encode(buffer).decode('utf-8')}"
+
+    payload = {
+        "image": b64_str,
+        "camera_id": "TEST-HTTP-STREAM",
+        "save_to_db": False,
+        "return_annotated": False
+    }
+
+    response = client.post("/api/detect/frame", json=payload)
+    assert response.status_code == 200
+    res_json = response.json()
+    assert "total_faces" in res_json
+    assert "compliance_percentage" in res_json
+    assert "detections" in res_json
+    assert "frame_dims" in res_json
+    assert res_json["frame_dims"]["width"] == 160
+    assert res_json["frame_dims"]["height"] == 160
 
 def test_websocket_connection():
     with client.websocket_connect("/ws/detection?camera_id=TEST-WS") as websocket:
