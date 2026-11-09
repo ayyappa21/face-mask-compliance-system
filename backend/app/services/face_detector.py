@@ -32,16 +32,49 @@ class FaceDetectorService:
             cls._instance = FaceDetectorService()
         return cls._instance
 
+    @property
+    def is_ready(self) -> bool:
+        return self.yunet_detector is not None or (self.face_cascade is not None and not self.face_cascade.empty())
+
+    @property
+    def status_info(self) -> dict:
+        return {
+            "ready": self.is_ready,
+            "yunet_loaded": self.yunet_detector is not None,
+            "haar_loaded": self.face_cascade is not None and not self.face_cascade.empty(),
+            "opencv_version": getattr(cv2, '__version__', 'N/A') if CV2_AVAILABLE else 'not_available',
+            "opencv_file": getattr(cv2, '__file__', 'N/A') if CV2_AVAILABLE else 'not_available',
+            "has_cascade_classifier": hasattr(cv2, 'CascadeClassifier') if CV2_AVAILABLE else False,
+            "has_yunet": hasattr(cv2, 'FaceDetectorYN') if CV2_AVAILABLE else False
+        }
+
     def init_detectors(self):
         if not CV2_AVAILABLE:
+            logger.error("OpenCV (cv2) is not available. Computer Vision detection disabled.")
             return
 
-        # 1. Initialize High-Performance Deep Learning Face Detector (YuNet ONNX)
-        yunet_path = Path(__file__).resolve().parent.parent.parent / "trained_models" / "face_detection_yunet.onnx"
-        if not yunet_path.exists():
-            yunet_path = Path("/tmp/face_detection_yunet.onnx")
+        cv2_file = getattr(cv2, '__file__', 'unknown')
+        cv2_ver = getattr(cv2, '__version__', 'unknown')
+        has_cascade_attr = hasattr(cv2, 'CascadeClassifier')
+        has_yunet_attr = hasattr(cv2, 'FaceDetectorYN')
+        logger.info(
+            f"OpenCV diagnostics: loaded from {cv2_file} (v{cv2_ver}) | "
+            f"CascadeClassifier: {has_cascade_attr} | FaceDetectorYN: {has_yunet_attr}"
+        )
 
-        if yunet_path.exists() and hasattr(cv2, "FaceDetectorYN"):
+        # 1. Initialize High-Performance Deep Learning Face Detector (YuNet ONNX)
+        yunet_candidates = [
+            Path(__file__).resolve().parent.parent.parent / "trained_models" / "face_detection_yunet.onnx",
+            Path("trained_models/face_detection_yunet.onnx"),
+            Path("/tmp/face_detection_yunet.onnx")
+        ]
+        yunet_path = None
+        for p in yunet_candidates:
+            if p.exists():
+                yunet_path = p
+                break
+
+        if yunet_path and has_yunet_attr:
             try:
                 # YuNet supports detecting multiple people simultaneously with no artificial cap (top_k=100)
                 self.yunet_detector = cv2.FaceDetectorYN.create(
@@ -52,19 +85,46 @@ class FaceDetectorService:
                     nms_threshold=0.32,
                     top_k=100
                 )
-                logger.info("OpenCV YuNet Deep Learning multi-face detector initialized successfully (top_k=100).")
+                logger.info(f"OpenCV YuNet Deep Learning multi-face detector initialized successfully from {yunet_path} (top_k=100).")
             except Exception as e:
-                logger.warning(f"Could not load YuNet face detector: {e}. Falling back to Haar cascades.")
+                logger.warning(f"Could not initialize YuNet face detector: {e}. Falling back to Haar cascades.")
                 self.yunet_detector = None
+        else:
+            if not yunet_path:
+                logger.warning("YuNet ONNX model file not found in search paths.")
+            if not has_yunet_attr:
+                logger.warning("OpenCV build does not include FaceDetectorYN.")
 
         # 2. Initialize Haar Cascade as reliable fallback
-        try:
-            cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-            self.face_cascade = cv2.CascadeClassifier(cascade_path)
-            if not self.face_cascade.empty():
-                logger.info("OpenCV Haar Cascade fallback detector initialized.")
-        except Exception as e:
-            logger.error(f"Error loading Haar cascade: {e}")
+        if has_cascade_attr:
+            cascade_candidates = [
+                Path(__file__).resolve().parent.parent.parent / "trained_models" / "haarcascade_frontalface_default.xml",
+                Path("trained_models/haarcascade_frontalface_default.xml"),
+            ]
+            if hasattr(cv2, "data") and hasattr(cv2.data, "haarcascades"):
+                cascade_candidates.append(Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml")
+
+            cascade_path = None
+            for cp in cascade_candidates:
+                if cp.exists():
+                    cascade_path = cp
+                    break
+
+            if cascade_path:
+                try:
+                    self.face_cascade = cv2.CascadeClassifier(str(cascade_path))
+                    if not self.face_cascade.empty():
+                        logger.info(f"OpenCV Haar Cascade fallback detector initialized successfully from {cascade_path}.")
+                    else:
+                        self.face_cascade = None
+                        logger.warning(f"Haar cascade XML loaded but classifier is empty from {cascade_path}.")
+                except Exception as e:
+                    logger.warning(f"Error loading Haar cascade from {cascade_path}: {e}")
+                    self.face_cascade = None
+            else:
+                logger.warning("Haar cascade XML file not found in trained_models or cv2.data.")
+        else:
+            logger.warning("cv2 does not export CascadeClassifier in this environment. YuNet will operate as primary detector.")
 
     def detect_and_classify_frame(
         self,

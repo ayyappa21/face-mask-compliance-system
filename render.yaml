@@ -6,8 +6,9 @@ services:
     region: oregon
     plan: free
     rootDir: backend
-    buildCommand: pip install --upgrade pip && pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu torch torchvision && pip install --no-cache-dir -r requirements.txt
+    buildCommand: pip install --upgrade pip && pip uninstall -y opencv-python opencv-contrib-python 2>/dev/null || true && pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu torch torchvision && pip install --no-cache-dir -r requirements.txt
     startCommand: python3 main.py
+    healthCheckPath: /health
     envVars:
       - key: PORT
         value: 10000

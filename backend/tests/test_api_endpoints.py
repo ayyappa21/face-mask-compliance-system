@@ -9,6 +9,15 @@ from app.core.config import settings
 
 client = TestClient(app)
 
+def test_root_endpoint():
+    response = client.get("/")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "online"
+    assert "endpoints" in data
+    assert data["endpoints"]["health"] == "/health"
+    assert data["endpoints"]["ready"] == "/health/ready"
+
 def test_health_endpoint():
     response = client.get("/health")
     assert response.status_code == 200
@@ -16,6 +25,17 @@ def test_health_endpoint():
     assert data["status"] == "healthy"
     assert data["database"] == "connected"
     assert data["model"]["loaded"] is True
+    assert "detector" in data
+    assert data["detector"]["ready"] is True
+
+def test_health_ready_endpoint():
+    response = client.get("/health/ready")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ready"] is True
+    assert data["status"] == "ready"
+    assert data["database"] == "connected"
+    assert data["classifier"]["loaded"] is True
 
 def test_auth_login_success():
     response = client.post(
