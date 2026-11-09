@@ -3,7 +3,7 @@
  * Dynamically resolves production Render backend, custom tunnel, and local backend URLs.
  */
 
-const DEFAULT_PRODUCTION_BACKEND = 'https://faceguard-backend-22en.onrender.com';
+const DEFAULT_PRODUCTION_BACKEND = 'https://expression-heard-frequency-improve.trycloudflare.com';
 
 export function getCustomApiUrl() {
   return localStorage.getItem('faceguard_custom_api_url') || '';
