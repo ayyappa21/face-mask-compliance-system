@@ -99,9 +99,9 @@ async def detect_frame_json(
     Processes compressed base64 frames asynchronously without blocking the event loop.
     Detects ALL visible people in a single frame.
     """
-    b64_img = payload.image
+    b64_img = payload.image or payload.frame
     if not b64_img:
-        raise HTTPException(status_code=400, detail="Image data is required.")
+        raise HTTPException(status_code=400, detail="Image data is required in 'image' or 'frame' field.")
 
     if "," in b64_img:
         b64_img = b64_img.split(",")[1]

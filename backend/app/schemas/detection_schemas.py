@@ -30,7 +30,8 @@ class FrameDetectionResponse(BaseModel):
     annotated_image: Optional[str] = None  # Base64 data URI if requested
 
 class StreamFrameRequest(BaseModel):
-    image: str = Field(..., description="Base64 encoded JPEG/PNG frame or data URI")
+    image: Optional[str] = Field(None, description="Base64 encoded JPEG/PNG frame or data URI")
+    frame: Optional[str] = Field(None, description="Alternative field for Base64 encoded frame")
     camera_id: Optional[str] = Field("webcam", description="Identifier of the streaming camera")
     save_to_db: Optional[bool] = Field(False, description="Whether to persist telemetry in database")
     return_annotated: Optional[bool] = Field(False, description="Whether to render and return HUD annotated JPEG")
