@@ -178,21 +178,40 @@ export const api = {
     return res.json();
   },
 
-  // High-Performance Real-Time Frame Streaming Detection (JSON)
+  // High-Performance Real-Time Frame Streaming Detection (JSON with Multipart Fallback)
   async detectFrameJson(payload) {
-    const res = await fetch(getApiEndpoint('/api/detect/frame'), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...getAuthHeaders()
-      },
-      body: JSON.stringify(payload)
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: 'Frame detection failed' }));
-      throw new Error(err.detail || `Frame detection failed with status ${res.status}`);
+    try {
+      const res = await fetch(getApiEndpoint('/api/detect/frame'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders()
+        },
+        body: JSON.stringify(payload)
+      });
+      if (res.status === 404) {
+        // Fallback to /api/detect multipart endpoint if /api/detect/frame is not yet active
+        const formData = new FormData();
+        formData.append('image_base64', payload.image);
+        formData.append('camera_id', payload.camera_id || 'webcam');
+        formData.append('save_to_db', payload.save_to_db ? 'true' : 'false');
+        return await this.detectFrame(formData);
+      }
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Frame detection failed' }));
+        throw new Error(err.detail || `Frame detection failed with status ${res.status}`);
+      }
+      return res.json();
+    } catch (err) {
+      if (err.message && err.message.includes('404')) {
+        const formData = new FormData();
+        formData.append('image_base64', payload.image);
+        formData.append('camera_id', payload.camera_id || 'webcam');
+        formData.append('save_to_db', payload.save_to_db ? 'true' : 'false');
+        return await this.detectFrame(formData);
+      }
+      throw err;
     }
-    return res.json();
   },
 
   // Multipart Detection API (Test Photos / Form Uploads)
