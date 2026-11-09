@@ -23,7 +23,7 @@ import {
   CheckCircle2,
   Settings as SettingsIcon
 } from 'lucide-react';
-import { api, getApiBaseUrl, setCustomApiUrl, getCustomApiUrl } from '../services/api';
+import { api, getApiBaseUrl, setCustomApiUrl, getCustomApiUrl, LIVE_TUNNEL_BACKEND } from '../services/api';
 import { DetectionWebSocket } from '../services/websocket';
 
 export function LiveMonitoringPage() {
@@ -119,7 +119,7 @@ export function LiveMonitoringPage() {
   // Check backend health periodically
   const checkBackendHealth = useCallback(async () => {
     try {
-      await api.getHealth(3000);
+      await api.getHealth(10000);
       setBackendStatus((prev) => (prev === 'fallback_http' ? 'fallback_http' : 'connected'));
     } catch {
       setBackendStatus('offline');
@@ -546,20 +546,27 @@ export function LiveMonitoringPage() {
   };
 
   // Save custom backend API URL
-  const handleSaveCustomUrl = async () => {
+  const handleSaveCustomUrl = async (overrideUrl) => {
+    const targetUrl = typeof overrideUrl === 'string' ? overrideUrl : customUrlInput;
     setTestingUrl(true);
     setTestResult(null);
     try {
-      setCustomApiUrl(customUrlInput);
-      const res = await api.getHealth(4000);
-      setTestResult({ ok: true, message: `Connected to ${res.app_name || 'FaceGuard AI'} (Status: ${res.status})` });
+      setCustomApiUrl(targetUrl);
+      const res = await api.getHealth(12000);
+      setTestResult({
+        ok: true,
+        message: `Connected: ${res.project || res.app_name || 'FaceGuard AI'} (Model: ${res.model?.architecture || 'Loaded'})`
+      });
       setBackendStatus('connected');
       setTimeout(() => {
         setShowConfigModal(false);
         setTestResult(null);
-      }, 1500);
+      }, 1200);
     } catch (err) {
-      setTestResult({ ok: false, message: `Connection failed: ${err.message}` });
+      setTestResult({
+        ok: false,
+        message: `Connection failed: ${err.message}. Ensure backend is awake or select a preset below.`
+      });
       setBackendStatus('offline');
     } finally {
       setTestingUrl(false);
@@ -981,22 +988,44 @@ export function LiveMonitoringPage() {
               </div>
             )}
 
-            <div className="flex items-center justify-end space-x-2 pt-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  onClick={() => {
+                    setCustomUrlInput('https://faceguard-backend-22en.onrender.com');
+                    handleSaveCustomUrl('https://faceguard-backend-22en.onrender.com');
+                  }}
+                  className="px-2.5 py-1 rounded-lg glass-pill text-[11px] text-[var(--accent)] font-semibold hover:bg-[var(--accent)]/10"
+                >
+                  Render Cloud
+                </button>
+                <button
+                  onClick={() => {
+                    setCustomUrlInput(LIVE_TUNNEL_BACKEND);
+                    handleSaveCustomUrl(LIVE_TUNNEL_BACKEND);
+                  }}
+                  className="px-2.5 py-1 rounded-lg glass-pill text-[11px] text-cyan-400 font-semibold hover:bg-cyan-500/10"
+                >
+                  Active Tunnel
+                </button>
+                <button
+                  onClick={() => {
+                    setCustomUrlInput('http://localhost:8001');
+                    handleSaveCustomUrl('http://localhost:8001');
+                  }}
+                  className="px-2.5 py-1 rounded-lg glass-pill text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                >
+                  Localhost
+                </button>
+              </div>
+
               <button
-                onClick={() => {
-                  setCustomUrlInput('http://localhost:8001');
-                }}
-                className="px-3 py-1.5 rounded-xl glass-pill text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-              >
-                Use Localhost
-              </button>
-              <button
-                onClick={handleSaveCustomUrl}
+                onClick={() => handleSaveCustomUrl()}
                 disabled={testingUrl}
                 className="flex items-center space-x-1.5 px-4 py-2 rounded-xl bg-[var(--accent)] text-white text-xs font-bold hover:opacity-95 shadow-md shadow-[var(--accent)]/30"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${testingUrl ? 'animate-spin' : ''}`} />
-                <span>{testingUrl ? 'Testing...' : 'Test & Connect'}</span>
+                <span>{testingUrl ? 'Connecting...' : 'Test & Connect'}</span>
               </button>
             </div>
           </div>

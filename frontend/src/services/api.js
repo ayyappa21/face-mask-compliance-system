@@ -3,10 +3,17 @@
  * Dynamically resolves production Render backend, custom tunnel, and local backend URLs.
  */
 
-const DEFAULT_PRODUCTION_BACKEND = 'https://expression-heard-frequency-improve.trycloudflare.com';
+const DEFAULT_PRODUCTION_BACKEND = 'https://faceguard-backend-22en.onrender.com';
+export const LIVE_TUNNEL_BACKEND = 'https://pmc-sufficient-tender-forgotten.trycloudflare.com';
 
 export function getCustomApiUrl() {
-  return localStorage.getItem('faceguard_custom_api_url') || '';
+  const custom = localStorage.getItem('faceguard_custom_api_url') || '';
+  // Auto-prune dead/expired trycloudflare URLs from previous sessions
+  if (custom && custom.includes('trycloudflare.com') && !custom.includes('pmc-sufficient-tender-forgotten')) {
+    localStorage.removeItem('faceguard_custom_api_url');
+    return '';
+  }
+  return custom;
 }
 
 export function setCustomApiUrl(url) {
@@ -62,7 +69,7 @@ export const api = {
   getCustomApiUrl,
 
   // Health
-  async getHealth(timeoutMs = 6000) {
+  async getHealth(timeoutMs = 12000) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
